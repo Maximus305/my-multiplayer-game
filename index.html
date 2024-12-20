@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Multiplayer Tank Game</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            overflow: hidden;
+            background: #000;
+            font-family: Arial, sans-serif;
+        }
+
+        #gameCanvas {
+            width: 100vw;
+            height: 100vh;
+            cursor: crosshair;
+        }
+
+        .overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.9);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            z-index: 100;
+        }
+
+        .input-group {
+            margin: 10px;
+        }
+
+        input {
+            padding: 8px;
+            margin: 5px;
+            border-radius: 4px;
+            border: 1px solid #444;
+            background: #222;
+            color: white;
+            width: 250px;
+        }
+
+        button {
+            padding: 8px 16px;
+            margin: 5px;
+            border-radius: 4px;
+            border: none;
+            background: #444;
+            color: white;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+
+        button:hover {
+            background: #666;
+        }
+
+        #stats {
+            position: fixed;
+            top: 10px;
+            left: 10px;
+            color: white;
+            font-family: monospace;
+            background: rgba(0,0,0,0.5);
+            padding: 10px;
+            border-radius: 4px;
+        }
+
+        .instructions {
+            margin: 20px;
+            color: #aaa;
+            text-align: center;
+        }
+
+        .instructions ul {
+            list-style: none;
+            margin: 10px 0;
+        }
+
+        #powerupDisplay {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            color: white;
+            font-family: monospace;
+            background: rgba(0,0,0,0.5);
+            padding: 10px;
+            border-radius: 4px;
+        }
+
+        #gameOver {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+    <div id="stats">Loading...</div>
+    <div id="powerupDisplay"></div>
+
+    <div id="loginOverlay" class="overlay">
+        <h2>Tank Battle</h2>
+        <div class="input-group">
+            <input type="text" id="playerName" placeholder="Enter your name" maxlength="15">
+        </div>
+        <button onclick="startGame()">Start Game</button>
+        <div class="instructions">
+            <p>Controls:</p>
+            <ul>
+                <li>WASD - Move tank</li>
+                <li>Mouse - Aim turret</li>
+                <li>Click - Shoot</li>
+                <li>Space - Use powerup</li>
+            </ul>
+        </div>
+    </div>
+
+    <div id="gameOver" class="overlay">
+        <h2>Game Over!</h2>
+        <p id="finalScore">Score: 0</p>
+        <button onclick="restartGame()">Play Again</button>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+
+        // Game configuration
+        const GAME_CONFIG = {
+            PLAYER_SPEED: 5,
+            BULLET_SPEED: 8,
+            POWERUP_SPAWN_RATE: 0.005,
+            BOT_SPAWN_RATE: 0.02,
+            MAX_BOTS: 5,
+            SHOOT_COOLDOWN: 250
+        };
+
+        // Game state
+        let gameState = {
+            players: new Map(),
+            bullets: [],
+            powerups: [],
+            score: 0,
+            gameOver: false,
+            currentPowerup: null,
+            lastShot: 0
+        };
+
+        // Mouse position tracking
+        let mouse = { x: 0, y: 0 };
+        canvas.addEventListener('mousemove', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            mouse.x = e.clientX - rect.left;
+            mouse.y = e.clientY - rect.top;
+        });
+
+        // Keyboard input tracking
+        const keys = new Set();
+        document.addEventListener('keydown', (e) => keys.add(e.key.toLowerCase()));
+        document.addEventListener('keyup', (e) => keys.delete(e.key.toLowerCase()));
+
+        // Player class
+        class Player {
+            constructor(x, y, isBot = false) {
+                this.x = x;
+                this.y = y;
+                this.angle = 0;
+                this.speed = GAME_CONFIG.PLAYER_SPEED;
+                this.size = 30;
+                this.health = 100;
+                this.score = 0;
+                this.isBot = isBot;
+                this.color = isBot ? '#ff0000' : '#00ff00';
+                this.lastShot = 0;
+            }
+
+            update() {
+                if (this.isBot) {
+                    this.updateBot();
+                } else {
+                    this.updatePlayer();
+                }
+            }
+
+            updatePlayer() {
+                if (keys.has('w')) this.y -= this.speed;
+                if (keys.has('s')) this.y += this.speed;
+                if (keys.has('a')) this.x -= this.speed;
+                if (keys.has('d')) this.x += this.speed;
+
+                this.x = Math.max(this.size, Math.min(canvas.width - this.size, this.x));
+                this.y = Math.max(this.size, Math.min(canvas.height - this.size, this.y));
+
+                const dx = mouse.x - this.x;
+                const dy = mouse.y - this.y;
+                this.angle = Math.atan2(dy, dx);
+            }
+
+            updateBot() {
+                const player = gameState.players.get('player');
+                if (!player) return;
+
+                const dx = player.x - this.x;
+                const dy = player.y - this.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                
+                this.angle = Math.atan2(dy, dx);
+
+                if (dist > 200) {
+                    this.x += (dx / dist) * this.speed * 0.5;
+                    this.y += (dy / dist) * this.speed * 0.5;
+                }
+
+                if (Math.random() < 0.02) {
+                    this.shoot();
+                }
+            }
+
+            shoot() {
+                const now = Date.now();
+                if (now - this.lastShot > GAME_CONFIG.SHOOT_COOLDOWN) {
+                    gameState.bullets.push(new Bullet(
+                        this.x + Math.cos(this.angle) * this.size,
+                        this.y + Math.sin(this.angle) * this.size,
+                        this.angle,
+                        this.isBot
+                    ));
+                    this.lastShot = now;
+                }
+            }
+
+            draw() {
+                ctx.save();
+                ctx.translate(this.x, this.y);
+                ctx.rotate(this.angle);
+
+                // Draw tank body
+                ctx.fillStyle = this.color;
+                ctx.fillRect(-this.size/2, -this.size/2, this.size, this.size);
+
+                // Draw tank turret
+                ctx.fillStyle = '#444';
+                ctx.fillRect(0, -5, this.size/1.5, 10);
+
+                ctx.restore();
+
+                // Draw health bar
+                const healthWidth = 40;
+                const healthHeight = 4;
+                ctx.fillStyle = '#500';
+                ctx.fillRect(this.x - healthWidth/2, this.y - this.size, healthWidth, healthHeight);
+                ctx.fillStyle = '#0f0';
+                ctx.fillRect(this.x - healthWidth/2, this.y - this.size, 
+                           (this.health/100) * healthWidth, healthHeight);
+            }
+
+            takeDamage(damage) {
+                this.health -= damage;
+                if (this.health <= 0 && !this.isBot) {
+                    gameState.gameOver = true;
+                    document.getElementById('gameOver').style.display = 'flex';
+                    document.getElementById('finalScore').textContent = `Final Score: ${this.score}`;
+                }
+            }
+        }
+
+        // Bullet class
+        class Bullet {
+            constructor(x, y, angle, isEnemyBullet) {
+                this.x = x;
+                this.y = y;
+                this.angle = angle;
+                this.speed = GAME_CONFIG.BULLET_SPEED;
+                this.size = 4;
+                this.isEnemyBullet = isEnemyBullet;
+            }
+
+            update() {
+                this.x += Math.cos(this.angle) * this.speed;
+                this.y += Math.sin(this.angle) * this.speed;
+                return this.isOffscreen();
+            }
+
+            draw() {
+                ctx.fillStyle = this.isEnemyBullet ? '#ff0000' : '#ffff00';
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            isOffscreen() {
+                return this.x < 0 || this.x > canvas.width || 
+                       this.y < 0 || this.y > canvas.height;
+            }
+        }
+
+        // Powerup class
+        class Powerup {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.size = 20;
+                this.type = Math.random() < 0.5 ? 'health' : 'speed';
+                this.color = this.type === 'health' ? '#ff0000' : '#00ffff';
+            }
+
+            draw() {
+                ctx.fillStyle = this.color;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        function spawnPowerup() {
+            if (Math.random() < GAME_CONFIG.POWERUP_SPAWN_RATE) {
+                gameState.powerups.push(new Powerup(
+                    Math.random() * (canvas.width - 40) + 20,
+                    Math.random() * (canvas.height - 40) + 20
+                ));
+            }
+        }
+
+        function spawnBot() {
+            if (Math.random() < GAME_CONFIG.BOT_SPAWN_RATE && 
+                Array.from(gameState.players.values()).filter(p => p.isBot).length < GAME_CONFIG.MAX_BOTS) {
+                const id = 'bot-' + Math.random().toString(36).substr(2, 9);
+                gameState.players.set(id, new Player(
+                    Math.random() * canvas.width,
+                    Math.random() * canvas.height,
+                    true
+                ));
+            }
+        }
+
+        function checkCollisions() {
+            const player = gameState.players.get('player');
+            if (!player) return;
+
+            // Check bullet collisions
+            for (let i = gameState.bullets.length - 1; i >= 0; i--) {
+                const bullet = gameState.bullets[i];
+                
+                // Check player collision with enemy bullets
+                if (bullet.isEnemyBullet) {
+                    const dx = player.x - bullet.x;
+                    const dy = player.y - bullet.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    
+                    if (dist < player.size/2 + bullet.size) {
+                        player.takeDamage(10);
+                        gameState.bullets.splice(i, 1);
+                        continue;
+                    }
+                }
+                
+                // Check bot collisions with player bullets
+                if (!bullet.isEnemyBullet) {
+                    gameState.players.forEach((other, id) => {
+                        if (other.isBot) {
+                            const dx = other.x - bullet.x;
+                            const dy = other.y - bullet.y;
+                            const dist = Math.sqrt(dx * dx + dy * dy);
+                            
+                            if (dist < other.size/2 + bullet.size) {
+                                other.takeDamage(34);
+                                gameState.bullets.splice(i, 1);
+                                if (other.health <= 0) {
+                                    gameState.players.delete(id);
+                                    player.score += 100;
+                                }
+                            }
+                        }
+                    });
+                }
+            }
+
+            // Check powerup collisions
+            for (let i = gameState.powerups.length - 1; i >= 0; i--) {
+                const powerup = gameState.powerups[i];
+                const dx = player.x - powerup.x;
+                const dy = player.y - powerup.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                
+                if (dist < player.size/2 + powerup.size) {
+                    if (powerup.type === 'health') {
+                        player.health = Math.min(100, player.health + 30);
+                    } else {
+                        player.speed = GAME_CONFIG.PLAYER_SPEED * 1.5;
+                        setTimeout(() => {
+                            if (player.speed > GAME_CONFIG.PLAYER_SPEED) {
+                                player.speed = GAME_CONFIG.PLAYER_SPEED;
+                            }
+                        }, 5000);
+                    }
+                    gameState.powerups.splice(i, 1);
+                }
+            }
+        }
+
+        function updateGame() {
+            if (gameState.gameOver) return;
+
+            // Update players
+            gameState.players.forEach(player => player.update());
+
+            // Update bullets
+            for (let i = gameState.bullets.length - 1; i >= 0; i--) {
+                if (gameState.bullets[i].update()) {
+                    gameState.bullets.splice(i, 1);
+                }
+            }
+
+            // Spawn entities
+            spawnPowerup();
+            spawnBot();
+
+            // Check collisions
+            checkCollisions();
+
+            // Update stats display
+            const player = gameState.players.get('player');
+            if (player) {
+                document.getElementById('stats').innerHTML = `
+                    Health: ${Math.round(player.health)}
+                    Score: ${player.score}
+                    Bots: ${Array.from(gameState.players.values()).filter(p => p.isBot).length}
+                `;
+            }
+        }
+
+        function drawGame() {
+        // Clear canvas
+        ctx.fillStyle = '#111';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        // Draw grid
+        ctx.strokeStyle = '#222';
+        ctx.lineWidth = 1;
+        const gridSize = 50;
+        for (let x = 0; x < canvas.width; x += gridSize) {
+            ctx.beginPath();
+            ctx.moveTo(x, 0);
+            ctx.lineTo(x, canvas.height);
+            ctx.stroke();
+        }
+        for (let y = 0; y < canvas.height; y += gridSize) {
+            ctx.beginPath();
+            ctx.moveTo(0, y);
+            ctx.lineTo(canvas.width, y);
+            ctx.stroke();
+        }
+
+        // Draw powerups
+        gameState.powerups.forEach(powerup => powerup.draw());
+
+        // Draw bullets
+        gameState.bullets.forEach(bullet => bullet.draw());
+
+        // Draw players
+        gameState.players.forEach(player => player.draw());
+    }
+
+    function gameLoop() {
+        if (!gameState.gameOver) {
+            updateGame();
+            drawGame();
+            requestAnimationFrame(gameLoop);
+        }
+    }
+
+    function startGame() {
+        const playerName = document.getElementById('playerName').value.trim();
+        if (!playerName) {
+            alert('Please enter your name!');
+            return;
+        }
+
+        // Initialize player
+        gameState = {
+            players: new Map(),
+            bullets: [],
+            powerups: [],
+            score: 0,
+            gameOver: false,
+            currentPowerup: null,
+            lastShot: 0
+        };
+
+        gameState.players.set('player', new Player(
+            canvas.width / 2,
+            canvas.height / 2,
+            false
+        ));
+
+        // Hide login overlay
+        document.getElementById('loginOverlay').style.display = 'none';
+        
+        // Start game loop
+        gameLoop();
+
+        // Add click listener for shooting
+        canvas.addEventListener('click', () => {
+            const player = gameState.players.get('player');
+            if (player) {
+                player.shoot();
+            }
+        });
+    }
+
+    function restartGame() {
+        document.getElementById('gameOver').style.display = 'none';
+        startGame();
+    }
+
+    // Handle window resize
+    window.addEventListener('resize', () => {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+    });
+
+    // Initialize click handlers for mobile
+    let isShooting = false;
+    canvas.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        isShooting = true;
+        const touch = e.touches[0];
+        mouse.x = touch.clientX;
+        mouse.y = touch.clientY;
+    });
+
+    canvas.addEventListener('touchmove', (e) => {
+        e.preventDefault();
+        const touch = e.touches[0];
+        mouse.x = touch.clientX;
+        mouse.y = touch.clientY;
+    });
+
+    canvas.addEventListener('touchend', () => {
+        isShooting = false;
+    });
+
+    // Virtual joystick for mobile
+    let joystickTouch = null;
+    let joystickStart = { x: 0, y: 0 };
+
+    canvas.addEventListener('touchstart', (e) => {
+        if (e.touches.length === 2 && !joystickTouch) {
+            joystickTouch = e.touches[1];
+            joystickStart.x = joystickTouch.clientX;
+            joystickStart.y = joystickTouch.clientY;
+        }
+    });
+
+    canvas.addEventListener('touchmove', (e) => {
+        for (let i = 0; i < e.touches.length; i++) {
+            if (e.touches[i].identifier === joystickTouch?.identifier) {
+                const dx = e.touches[i].clientX - joystickStart.x;
+                const dy = e.touches[i].clientY - joystickStart.y;
+                const player = gameState.players.get('player');
+                if (player) {
+                    player.x += dx * 0.1;
+                    player.y += dy * 0.1;
+                }
+                break;
+            }
+        }
+    });
+
+    canvas.addEventListener('touchend', (e) => {
+        if (joystickTouch && Array.from(e.touches).every(t => t.identifier !== joystickTouch.identifier)) {
+            joystickTouch = null;
+        }
+    });
+
+    // Prevent context menu on right click
+    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+</script>
+</body>
+</html>
